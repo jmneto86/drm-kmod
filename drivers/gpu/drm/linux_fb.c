@@ -50,9 +50,11 @@ extern struct vt_device *main_vd;
 static int __unregister_framebuffer(struct linux_fb_info *fb_info);
 
 void
-vt_freeze_main_vd(unsigned long base, unsigned long size)
+vt_freeze_main_vd(struct apertures_struct *a)
 {
 	struct fb_info *fb;
+	int i;
+	bool overlap = false;
 
 	if (main_vd && main_vd->vd_driver && main_vd->vd_softc &&
 	    /* For these, we know the softc (or its first field) is of type fb_info */
@@ -63,8 +65,18 @@ vt_freeze_main_vd(unsigned long base, unsigned long size)
 	    || strcmp(main_vd->vd_driver->vd_name, "drmfb") == 0)) {
 		fb = main_vd->vd_softc;
 
-		if (fb->fb_pbase == base ||
-		    ((fb->fb_pbase > base) && (fb->fb_pbase < (base + size))))
+		for (i = 0; i < a->count; i++) {
+			if (fb->fb_pbase == a->ranges[i].base) {
+				overlap = true;
+				break;
+			}
+			if ((fb->fb_pbase > a->ranges[i].base) &&
+			    (fb->fb_pbase < (a->ranges[i].base + a->ranges[i].size))) {
+				overlap = true;
+				break;
+			}
+		}
+		if (overlap == true)
 			fb->fb_flags |= FB_FLAG_NOWRITE;
 	}
 }
@@ -126,16 +138,17 @@ framebuffer_release(struct linux_fb_info *info)
 {
 	if (info == NULL)
 		return;
+	kfree(info->apertures);
 	free(info, LKPI_FB_MEM);
 }
 
 int
-remove_conflicting_framebuffers(resource_size_t base, resource_size_t size,
+remove_conflicting_framebuffers(struct apertures_struct *a,
 				const char *name, bool primary)
 {
 
 	sx_xlock(&linux_fb_mtx);
-	vt_freeze_main_vd(base, size);
+	vt_freeze_main_vd(a);
 	sx_xunlock(&linux_fb_mtx);
 	return (0);
 }
@@ -143,19 +156,30 @@ remove_conflicting_framebuffers(resource_size_t base, resource_size_t size,
 int
 remove_conflicting_pci_framebuffers(struct pci_dev *pdev, const char *name)
 {
-	unsigned long base, size;
-	int bar;
+	struct apertures_struct *ap;
+	int idx, bar;
 
-	sx_xlock(&linux_fb_mtx);
-	for (bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
+	for (idx = 0, bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
 		if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM))
 			continue;
-		base = pci_resource_start(pdev, bar);
-		size = pci_resource_len(pdev, bar);
-		vt_freeze_main_vd(base, size);
+		idx++;
 	}
-	sx_xunlock(&linux_fb_mtx);
 
+	ap = alloc_apertures(idx);
+	if (!ap)
+		return -ENOMEM;
+
+	for (idx = 0, bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
+		if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM))
+			continue;
+		ap->ranges[idx].base = pci_resource_start(pdev, bar);
+		ap->ranges[idx].size = pci_resource_len(pdev, bar);
+		idx++;
+	}
+	sx_xlock(&linux_fb_mtx);
+	vt_freeze_main_vd(ap);
+	sx_xunlock(&linux_fb_mtx);
+	kfree(ap);
 	return (0);
 }
 

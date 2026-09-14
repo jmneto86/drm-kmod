@@ -82,11 +82,16 @@ int
 register_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
 {
 	int ret;
+	struct apertures_struct *ap;
 
 	MPASS(base != 0);
 	MPASS(size != 0);
 
-	vt_freeze_main_vd(base, size);
+	ap = alloc_apertures(1);
+	ap->ranges[0].base = base;
+	ap->ranges[0].size = size;
+	vt_freeze_main_vd(ap);
+	kfree(ap);
 
 	ret = vm_phys_fictitious_reg_range(base, base + size,
 #ifdef VM_MEMATTR_WRITE_COMBINING
@@ -134,9 +139,6 @@ drm_dev_alias(struct device *ldev, struct drm_minor *minor, const char *minor_st
 	SYSCTL_ADD_PROC(ctx_list, oid_list, OID_AUTO, "PCI_ID",
 	    CTLTYPE_STRING | CTLFLAG_RD, NULL, tmp,
 	    sysctl_pci_id, "A", "PCI vendor and device ID");
-	SYSCTL_ADD_INT(ctx_list, oid_list, OID_AUTO, "type",
-	    CTLFLAG_RD, &minor->type, 0,
-	    "DRM minor type (0=primary, 2=render)");
 
 	/*
 	 * FreeBSD won't automaticaly create the corresponding device
